@@ -1,10 +1,6 @@
 from rply import Token, LexerGenerator, ParserGenerator
-from objects import Atom, Compound, Variable, Clause
-import sys
-
-def main():
-    for decl in parse(sys.stdin.read()):
-        print decl
+from rply.token import BaseBox
+from objects import Atom, Compound, Variable, as_list
 
 leg = LexerGenerator()
 leg.ignore(r'\s+')
@@ -26,14 +22,20 @@ pg = ParserGenerator(
      'LEFTPAREN0', 'COMMA', 'LINE'])
 
 @pg.production('file : ')
+def file_blank(env, p):
+    return Box(env.getnil())
+
 @pg.production('file : clause')
 def file_clause(env, p):
-    return list(p)
+    car = unbox(p[0])
+    cdr = env.getnil()
+    return Box(env.getcons(car, cdr))
 
-@pg.production('file : file LINE clause')
+@pg.production('file : clause LINE file')
 def file_clause(env, p):
-    p[0].append(p[2])
-    return p[0]
+    car = unbox(p[0])
+    cdr = unbox(p[2])
+    return Box(env.getcons(car, cdr))
 
 @pg.production('goal : formula')
 def goal_formula(env, p):
@@ -41,44 +43,56 @@ def goal_formula(env, p):
 
 @pg.production('goal : formula goal')
 def goal_formula(env, p):
-    return Compound(env.getatom('and', 2), [p[0], p[1]])
+    a = unbox(p[0])
+    b = unbox(p[1])
+    return Box(Compound(env.getatom('and', 2), [a, b]))
 
 @pg.production('clause : formula')
 def clause_axiom(env, p):
-    true = env.getatom('true', 0)
-    return Clause(p[0], true)
+    head = unbox(p[0])
+    body = Compound(env.getatom('true', 0), [])
+    return Box(Compound(env.getatom('<-', 2), [head, body]))
 
 @pg.production('clause : formula IMPLICATION goal ')
 def clause_rule(env, p):
-    return Clause(p[0], p[2])
+    head = unbox(p[0])
+    body = unbox(p[2])
+    return Box(Compound(env.getatom('<-', 2), [head, body]))
 
 @pg.production('predicate_list : predicate')
 def predicate_list_first(env, p):
-    return [p[0]]
+    car = unbox(p[0])
+    cdr = env.getnil()
+    return Box(env.getcons(car, cdr))
 
-@pg.production('predicate_list : predicate_list COMMA predicate')
+@pg.production('predicate_list : predicate COMMA predicate_list')
 def predicate_list_next(env, p):
-    return p[0] + [p[2]]
+    car = unbox(p[0])
+    cdr = unbox(p[2])
+    return Box(env.getcons(car, cdr))
 
 @pg.production('formula   : ATOM')
 @pg.production('predicate : ATOM')
 def predicate_atom(env, p):
-    return env.getatom(p[0].getstr(), 0)
+    return Box(Compound(env.getatom(p[0].getstr(), 0), []))
 
 @pg.production('predicate : VARIABLE')
 def predicate_variable(env, p):
-    return env.getvar(p[0].getstr())
+    return Box(env.getvar(p[0].getstr()))
 
 @pg.production('formula   : ATOM LEFTPAREN predicate_list RIGHTPAREN')
 @pg.production('predicate : ATOM LEFTPAREN predicate_list RIGHTPAREN')
 def predicate_compound(env, p):
-    atom = env.getatom(p[0].getstr(), len(p[2]))
-    return Compound(atom, p[2])
+    seq = as_list(unbox(p[2]))
+    atom = env.getatom(p[0].getstr(), len(seq))
+    return Box(Compound(atom, seq))
 
 @pg.production('formula : predicate UNIFY predicate')
 def formula_unify(env, p):
+    left  = unbox(p[0])
+    right = unbox(p[2])
     atom = env.getatom("=", 2)
-    return Compound(atom, [p[0], p[2]])
+    return Box(Compound(atom, [left, right]))
 
 @pg.production('formula   : LEFTPAREN0 predicate RIGHTPAREN')
 @pg.production('predicate : LEFTPAREN0 predicate RIGHTPAREN')
@@ -91,16 +105,19 @@ def predicate_list(env, p):
 
 @pg.production('list_predicate : ')
 def list_empty(env, p):
-    return Compound(env.getatom("nil", 0), [])
+    return Box(env.getnil())
 
 @pg.production('list_predicate : predicate')
 def predicate_list_first(env, p):
-    return Compound(env.getatom(".", 2), [p[0], list_empty(env, p)])
+    car = unbox(p[0])
+    cdr = env.getnil()
+    return Box(env.getcons(car, cdr))
 
 @pg.production('list_predicate : predicate COMMA list_predicate')
 def predicate_list_next(env, p):
-    return Compound(env.getatom(".", 2), [p[0], p[2]])
-
+    car = unbox(p[0])
+    cdr = unbox(p[2])
+    return Box(env.getcons(car, cdr))
 
 @pg.error
 def error_handler(env, token):
@@ -135,17 +152,23 @@ class ParserState(object):
             self.next_varno += 1
             return var
 
+    def getnil(self):
+        return Compound(self.getatom("nil", 0), [])
+
+    def getcons(self, car, cdr):
+        return Compound(self.getatom(":", 2), [car, cdr])
+
 def layout(tokens):
-    lineno = None
-    precede = None
+    lineno = -1
+    precede = ""
     for token in tokens:
-        if lineno is None:
+        if lineno < 0:
             lineno = token.source_pos.lineno
         if lineno < token.source_pos.lineno:
             lineno = token.source_pos.lineno
             if token.source_pos.colno == 1:
                 yield Token("LINE", "")
-            precede = None
+            precede = ""
         if token.gettokentype() == "LEFTPAREN" and precede != "ATOM":
             yield Token("LEFTPAREN0", token.getstr())
         else:
@@ -154,7 +177,12 @@ def layout(tokens):
 
 def parse(source):
     state = ParserState(0)
-    return parser.parse(layout(lexer.lex(source)), state=state)
+    return unbox(parser.parse(layout(lexer.lex(source)), state=state))
 
-if __name__=="__main__":
-    main()
+class Box(BaseBox):
+    def __init__(self, value):
+        self.value = value
+
+def unbox(box):
+    assert isinstance(box, Box)
+    return box.value

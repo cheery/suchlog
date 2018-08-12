@@ -1,0 +1,8 @@
+append(nil, nil, nil)
+append(nil, X, X) <- cons(X)
+append(cons(A, M), N, cons(A, L)) <-
+    append(M, N, L)
+
+good_weather <-
+   sunny
+   calm
