@@ -1,8 +1,11 @@
 append(nil, nil, nil)
-append(nil, X, X) <- cons(X)
+append(nil, cons(X, Y), cons(X, Z)) <- append(nil, Y, Z)
 append(cons(A, M), N, cons(A, L)) <-
     append(M, N, L)
 
 good_weather <-
    sunny
    calm
+
+main <-
+   append(nil, nil, nil)

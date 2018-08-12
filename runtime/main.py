@@ -1,10 +1,13 @@
-from objects import Atom, Compound, Variable
+from objects import Atom, Compound, Variable, atom
 from rpython.rlib import rfile
+import machine
 import parser
 import os
 
 def new_entry_point(config):
     return main
+
+MAIN = atom("main", 0)
 
 def main(argv):
     if len(argv) <= 1:
@@ -16,6 +19,10 @@ def main(argv):
     finally:
         fd.close()
 
-    decls = parser.parse(source)
-    os.write(1, decls.stringify() + "\n")
+    code, next_varno = parser.parse(source)
+    program = machine.load(code)
+    program.solve(succ, Compound(MAIN, []), next_varno)
     return 0
+
+def succ():
+    print "wow!"

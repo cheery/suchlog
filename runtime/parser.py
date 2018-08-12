@@ -1,6 +1,6 @@
 from rply import Token, LexerGenerator, ParserGenerator
 from rply.token import BaseBox
-from objects import Atom, Compound, Variable, as_list
+from objects import Atom, Compound, Variable, known_atoms, atom, as_list
 
 leg = LexerGenerator()
 leg.ignore(r'\s+')
@@ -132,11 +132,14 @@ class ParserState(object):
         self.next_varno = next_varno
     
     def getatom(self, name, arity):
+        key = (name, arity)
+        if key in known_atoms:
+            return known_atoms[key]
         try:
-            return self.atoms[(name, arity)]
+            return self.atoms[key]
         except KeyError as _:
             atom = Atom(name, arity)
-            self.atoms[(name, arity)] = atom
+            self.atoms[key] = atom
             return atom
 
     def getvar(self, name):
@@ -177,7 +180,8 @@ def layout(tokens):
 
 def parse(source):
     state = ParserState(0)
-    return unbox(parser.parse(layout(lexer.lex(source)), state=state))
+    code = unbox(parser.parse(layout(lexer.lex(source)), state=state))
+    return code, state.next_varno
 
 class Box(BaseBox):
     def __init__(self, value):

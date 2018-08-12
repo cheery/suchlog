@@ -35,6 +35,7 @@ def main():
         help="Use pypy for interpretation")
     cmd.add_argument("--pdb", action="store_true",
         help="Run with a debugger")
+    cmd.add_argument("args", nargs="*")
 
     parser.set_default_subparser("build")
 
@@ -117,7 +118,7 @@ def interpret_runtime(args):
         flags.extend(["-m", "pdb"])
     for key, value in config.get('env', {}).items():
         os.environ[key] = value
-    check_call([cmd] + flags + ["runtime/goal_standalone.py"])
+    check_call([cmd] + flags + ["runtime/goal_standalone.py"] + args.args)
 
 # There's a build-time configuration file in build/config.json
 # It contains some variables you may change to adjust your build.
