@@ -1,4 +1,6 @@
 from rpython.rlib.objectmodel import specialize, not_rpython
+from rpython.rlib.rbigint import rbigint
+from rpython.rlib.rstring import NumberStringParser
 
 
 class Object:
@@ -68,20 +70,72 @@ class Compound(Object):
     def unroll(self):
         return self
 
+class Integer(Object):
+    def __init__(self, bignum):
+        self.bignum = bignum
+
+    def stringify(self):
+        return self.bignum.format(digits[:10])
+
+    def copy(self, mach):
+        return self
+
+    def occurs(self, t):
+        return False
+
+    def same(self, t):
+        if isinstance(t, Integer):
+            return self.bignum.eq(t.bignum)
+        return False
+
+    def same_compound(self, other):
+        return False
+
+    def unify(self, mach, t):
+        if isinstance(t, Integer):
+            return self.bignum.eq(t.bignum)
+        return t.unify(mach, self)
+
+    def unify_compound(self, mach, t):
+        return False
+
+    def unroll(self):
+        return self
+
+def parse_integer(string, base=10):
+    if base > 36:
+        raise ValueError("Not enough digits to base")
+    if base < 0:
+        raise ValueError("Negative base")
+    literal = string
+    parser = NumberStringParser(string, literal, base, 'long')
+    return Integer(rbigint._from_numberstring_parser(parser))
+
+digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+
 class Variable(Object):
     def __init__(self, varno):
         self.instance = self
         self.varno = varno
+        self.goal = None
 
     def stringify(self):
         return "_" + str(self.varno)
 
+    # Note that this is not a generic copy operation.
+    # Any hidden and instantiated variable should be
+    # removed before using this operation.
     def copy(self, mach):
         if self.instance is self:
             var = mach.new_var()
             mach.bind(self, var)
             return var
-        return self.instance.copy(mach)
+        return self.instance
+
+    def occurs(self, t):
+        if self.instance is self:
+            return t is self
+        return self.instance.occurs(t)
 
     def same(self, t):
         if self.instance is self:
@@ -110,7 +164,6 @@ class Variable(Object):
             return self
         else:
             return self.instance.unroll()
-        
 
 known_atoms = {}
 
@@ -125,6 +178,13 @@ def atom(name, arity):
 
 NIL  = atom("nil", 0)
 CONS = atom(":", 2)
+AND = atom("and", 2)
+OR  = atom("or", 2)
+TRUE = atom("true", 0)
+FALSE = atom("false", 0)
+
+success = Compound(TRUE, [])
+failure = Compound(FALSE, [])
 
 def as_list(cons):
     result = []
@@ -142,9 +202,50 @@ def as_list(cons):
 # Any mutation to any data structure must be
 # recorded in the trail.
 class Trail:
-    def __init__(self, next_varno):
+    def __init__(self, success, conj, disj, next_varno):
         self.sofar = []
+        self.success = success
+        self.conj = conj
+        self.disj = disj
         self.next_varno = next_varno
+
+    def next_goal(self):
+        assert isinstance(self.conj, Compound)
+        if self.conj.fsym is AND:
+            goal = self.conj.args[0]
+            self.conj = self.conj.args[1]
+            return goal
+        elif self.conj.fsym is TRUE:
+            if self.success():
+                self.disj = []
+            else:
+                self.conj = failure
+                return self.next_goal()
+        elif self.conj.fsym is FALSE:
+            if len(self.disj) == 0:
+                return None
+            t, self.conj = self.disj.pop()
+            self.undo(t)
+            return self.next_goal()
+        else:
+            goal = self.conj
+            self.conj = success
+            return goal
+
+    def invoke(self, goal):
+        if isinstance(goal, Compound) and goal.fsym is TRUE:
+            return
+        self.conj = Compound(AND, [goal, self.conj])
+
+    def expand(self, goals):
+        for goal in reversed(goals):
+            self.invoke(goal)
+
+    def choicepoint(self, goals):
+        conj = self.conj
+        for goal in reversed(goals):
+            conj = Compound(AND, [goal, conj])
+        self.disj.append((self.note(), conj))
 
     def note(self):
         return len(self.sofar)
@@ -170,6 +271,15 @@ class Trail:
     def bind(self, this, value):
         this.instance = value
         self.push(Bound(this))
+        if this.goal is not None:
+            self.invoke(this.goal)
+
+    def freeze(self, this, goal):
+        self.push(Frozen(this, this.goal))
+        if this.goal is None:
+            this.goal = goal
+        else:
+            this.goal = Compound(AND, [goal, this.goal])
 
 class Action(object):
     pass
@@ -180,3 +290,11 @@ class Bound(Action):
 
     def reset(self):
         self.this.instance = self.this
+
+class Frozen(Action):
+    def __init__(self, this, previous_goal):
+        self.this = this
+        self.previous_goal = previous_goal
+
+    def reset(self):
+        self.this.goal = self.previous_goal

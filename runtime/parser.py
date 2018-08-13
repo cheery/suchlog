@@ -1,11 +1,14 @@
 from rply import Token, LexerGenerator, ParserGenerator
 from rply.token import BaseBox
 from objects import Atom, Compound, Variable, known_atoms, atom, as_list
+from objects import parse_integer
 
 leg = LexerGenerator()
+leg.ignore(r'#.*\n')
 leg.ignore(r'\s+')
 leg.add('ATOM',         r'[a-z][a-zA-Z0-9_]*')
 leg.add('VARIABLE',     r'[A-Z_][a-zA-Z0-9_]*')
+leg.add('INTEGER',      r'[0-9]+')
 leg.add('IMPLICATION',  r"<-")
 leg.add('UNIFY',        r"=")
 leg.add('LEFTPAREN',    r"\(")
@@ -19,6 +22,7 @@ pg = ParserGenerator(
     ['ATOM', 'VARIABLE', 'IMPLICATION',
      'UNIFY', 'LEFTPAREN', 'RIGHTPAREN',
      'LEFTBRACKET', 'RIGHTBRACKET',
+     'INTEGER',
      'LEFTPAREN0', 'COMMA', 'LINE'])
 
 @pg.production('file : ')
@@ -75,6 +79,10 @@ def predicate_list_next(env, p):
 @pg.production('predicate : ATOM')
 def predicate_atom(env, p):
     return Box(Compound(env.getatom(p[0].getstr(), 0), []))
+
+@pg.production('predicate : INTEGER')
+def predicate_integer(env, p):
+    return Box(parse_integer(p[0].getstr()))
 
 @pg.production('predicate : VARIABLE')
 def predicate_variable(env, p):
