@@ -120,7 +120,9 @@ class Variable(Object):
         self.goal = None
 
     def stringify(self):
-        return "_" + str(self.varno)
+        if self.instance is self:
+            return "_" + str(self.varno)
+        return self.instance.stringify()
 
     # Note that this is not a generic copy operation.
     # Any hidden and instantiated variable should be
@@ -208,6 +210,7 @@ class Trail:
         self.conj = conj
         self.disj = disj
         self.next_varno = next_varno
+        self.copying = False
 
     def next_goal(self):
         assert isinstance(self.conj, Compound)
@@ -251,7 +254,8 @@ class Trail:
         return len(self.sofar)
 
     def push(self, action):
-        self.sofar.append(action)
+        if len(self.disj) > 0 or self.copying:
+            self.sofar.append(action)
 
     def undo(self, whereto):
         while len(self.sofar) != whereto:
@@ -263,9 +267,11 @@ class Trail:
         return var
 
     def variant(self, obj):
+        self.copying = True
         t = self.note()
         ret = obj.copy(self)
         self.undo(t)
+        self.copying = False
         return ret
 
     def bind(self, this, value):

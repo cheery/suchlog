@@ -21,7 +21,10 @@ def main(argv):
 
     code, next_varno = parser.parse(source)
     program = machine.load(code)
-    program.solve(succ, Compound(MAIN, []), next_varno)
+    try:
+        program.solve(succ, Compound(MAIN, []), next_varno)
+    except machine.Exiting as exit:
+        return exit.status
     return 0
 
 def succ():

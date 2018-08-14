@@ -1,6 +1,8 @@
-from objects import Atom, Compound, Variable, known_atoms, atom, as_list
+from objects import Atom, Compound, Integer, Variable
+from objects import known_atoms, atom, as_list
 from objects import CONS, NIL, AND, OR, TRUE, FALSE, failure, success
 from objects import Trail
+import os
 
 CLAUSE = atom("<-", 2)
 SAME = atom("same", 2)
@@ -33,6 +35,9 @@ class Program:
         mach = Trail(success, conj, disj, next_varno)
         return solve(mach, self)
 
+WRITE = atom("write", 1)
+EXIT = atom("exit", 1)
+
 def solve(mach, program, debug=False):
     goal = mach.next_goal()
     while goal is not None:
@@ -60,9 +65,9 @@ def solve(mach, program, debug=False):
             if not car.same(cdr):
                 mach.conj = failure
         elif goal.fsym is UNIFY:
-            car = goal.args[0]
-            cdr = goal.args[1]
-            if not car.unify(mach, cdr):
+            left = goal.args[0]
+            right = goal.args[1]
+            if not left.unify(mach, right):
                 mach.conj = failure
         elif goal.fsym is DEF:
             head = goal.args[0]
@@ -77,8 +82,21 @@ def solve(mach, program, debug=False):
         elif goal.fsym in program.defs:
             clauses = program.defs[goal.fsym]
             mach.invoke(Compound(DEF, [goal, clauses]))
+        elif goal.fsym is EXIT:
+            a = goal.args[0].unroll()
+            if isinstance(a, Integer):
+                raise Exiting(a.bignum.toint())
+            else:
+                mach.conj = failure
+        elif goal.fsym is WRITE:
+            s = goal.args[0].stringify()
+            os.write(1, s + "\n")
         else:
             raise ValueError("unknown predicate: %s" % goal.stringify())
         if debug:
             print "=> " + mach.conj.stringify()
         goal = mach.next_goal()
+
+class Exiting(Exception):
+    def __init__(self, status):
+        self.status = status

@@ -8,5 +8,6 @@ good_weather <-
    calm
 
 main <-
-   append(nil, nil, nil)
-   append(cons(1, nil), nil, Y)
+   append(cons(1, nil), cons(2, nil), Y)
+   write(hello(world, Y))
+   exit(0)
