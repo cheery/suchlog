@@ -36,6 +36,11 @@ weak_to_move(Pokemon, Move) <-
   pokemon_type(Pokemon, PokemonType)
   super_effective(MoveType, PokemonType)
 
+reflexivity  @ leq(X, Y)            | same(X, Y) <=> true
+antisymmetry @ leq(X, Y), leq(Y, X)              <=> X = Y
+transitivity @ leq(X, Y), leq(Y, Z)              ==> leq(X, Z)
+idempotence  @ leq(X, Y); leq(X, Y)              <=> true
+
 green <-
     chr_add_constraint(green, ID)
     cond(green_guard_1(ID, ID_1), green_dispatch_1(ID, ID_1))

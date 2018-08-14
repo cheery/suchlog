@@ -10,12 +10,17 @@ leg.add('ATOM',         r'[a-z][a-zA-Z0-9_]*')
 leg.add('VARIABLE',     r'[A-Z_][a-zA-Z0-9_]*')
 leg.add('INTEGER',      r'[0-9]+')
 leg.add('IMPLICATION',  r"<-")
-leg.add('UNIFY',        r"=")
 leg.add('LEFTPAREN',    r"\(")
 leg.add('RIGHTPAREN',   r"\)")
 leg.add('LEFTBRACKET',  r"\[")
 leg.add('RIGHTBRACKET', r"\]")
 leg.add('COMMA',        r",")
+leg.add('AT',           r"@")
+leg.add('VBAR',         r"\|")
+leg.add('SIMP',         r"<=>")
+leg.add('PROP',         r"==>")
+leg.add('UNIFY',        r"=")
+leg.add('SEMICOLON',    r";")
 lexer = leg.build()
 
 pg = ParserGenerator(
@@ -23,6 +28,7 @@ pg = ParserGenerator(
      'UNIFY', 'LEFTPAREN', 'RIGHTPAREN',
      'LEFTBRACKET', 'RIGHTBRACKET',
      'INTEGER',
+     'AT', 'VBAR', 'SIMP', 'PROP', 'SEMICOLON',
      'LEFTPAREN0', 'COMMA', 'LINE'])
 
 @pg.production('file : ')
@@ -50,6 +56,44 @@ def goal_formula(env, p):
     a = unbox(p[0])
     b = unbox(p[1])
     return Box(Compound(env.getatom('and', 2), [a, b]))
+
+@pg.production('clause : ATOM AT predicate_list guard SIMP goal')
+def clause_simplification(env, p):
+    name = Compound(env.getatom(p[0].getstr(), 0), [])
+    keep = env.getnil()
+    drop = unbox(p[2])
+    guard = unbox(p[3])
+    goal = unbox(p[5])
+    return Box(Compound(env.getatom('constraint_rule', 5),
+        [name, keep, drop, guard, goal]))
+
+@pg.production('clause : ATOM AT predicate_list guard PROP goal')
+def clause_propagation(env, p):
+    name = Compound(env.getatom(p[0].getstr(), 0), [])
+    keep = unbox(p[2])
+    drop = env.getnil()
+    guard = unbox(p[3])
+    goal = unbox(p[5])
+    return Box(Compound(env.getatom('constraint_rule', 5),
+        [name, keep, drop, guard, goal]))
+
+@pg.production('clause : ATOM AT predicate_list SEMICOLON predicate_list guard SIMP goal')
+def clause_simpagation(env, p):
+    name = Compound(env.getatom(p[0].getstr(), 0), [])
+    keep = unbox(p[2])
+    drop = unbox(p[4])
+    guard = unbox(p[5])
+    goal = unbox(p[7])
+    return Box(Compound(env.getatom('constraint_rule', 5),
+        [name, keep, drop, guard, goal]))
+
+@pg.production('guard : ')
+def empty_guard(env, p):
+    return Box(Compound(env.getatom('true', 0), []))
+
+@pg.production('guard : VBAR formula')
+def empty_guard(env, p):
+    return p[1]
 
 @pg.production('clause : formula')
 def clause_axiom(env, p):
@@ -129,7 +173,8 @@ def predicate_list_next(env, p):
 
 @pg.error
 def error_handler(env, token):
-    raise ValueError("Ran into a %s where it wasn't expected" % token.gettokentype())
+    raise ValueError("%d: Ran into a %s where it wasn't expected" % 
+        (token.source_pos.lineno, token.gettokentype()))
 
 parser = pg.build()
 

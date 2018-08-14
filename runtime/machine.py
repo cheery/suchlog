@@ -5,13 +5,17 @@ from objects import Trail
 import os
 
 CLAUSE = atom("<-", 2)
+CONSTRAINT_RULE = atom("constraint_rule", 5)
+
 SAME = atom("same", 2)
 UNIFY = atom("=", 2)
 COND2 = atom("cond", 2)
 DEF = atom("DEF", 2)
 
-def load(code):
+def load(code, varno=100):
     defs = {}
+    constraints = {}
+    occurrenceno = 0
     for clause in reversed(as_list(code)):
         assert isinstance(clause, Compound)
         if clause.fsym is CLAUSE:
@@ -22,9 +26,138 @@ def load(code):
             else:
                 rest = Compound(NIL, [])
             defs[head.fsym] = Compound(CONS, [clause, rest])
+        elif clause.fsym is CONSTRAINT_RULE:
+            # Add every free variable that appears between keep/drop/guard and goal
+            # Add free variable for every ID
+            # into goal: prepend chr_kill for 'drops'
+            #            prepend chr_suspend(X, OCU) for 'keeps'
+            name = clause.args[0]
+            assert isinstance(name, Compound)
+            name = name.fsym.name
+            keep = as_list(clause.args[1])
+            drop = as_list(clause.args[2])
+            guard = clause.args[3]
+            goal = clause.args[4]
+            a = find_free(keep + drop + [guard])
+            b = find_free([goal])
+            heads = []
+            a_args = []
+            v_args = []
+            for k in keep:
+                ID_THIS = Variable(varno)
+                OCU_THIS = occurrenceno
+                varno += 1
+                occurrenceno += 1
+                heads.append((ID_THIS, OCU_THIS, k))
+                goal = Compound(AND, [
+                    Compound(CHR_SUSPEND2, [ID_THIS, wrap(OCU_THIS)]),
+                    goal])
+                a_args.append(ID_THIS)
+            for d in drop:
+                ID_THIS = Variable(varno)
+                OCU_THIS = occurrenceno
+                varno += 1
+                occurrenceno += 1
+                heads.append((ID_THIS, OCU_THIS, k))
+                goal = Compound(AND, [
+                    Compound(CHR_KILL, [ID_THIS]),
+                    goal])
+                a_args.append(ID_THIS)
+            for v in b:
+                if v not in a:
+                    continue
+                a_args.append(v)
+                v_args.append(v)
+            # Create new hidden fsym with 'name.apply'
+            fapp = Atom(name + ".apply", len(a_args))
+            assert fapp not in defs
+            defs[fapp] = Compound(CONS, [
+                Compound(CLAUSE, [
+                    Compound(fapp, list(a_args)),
+                    goal]),
+                Compound(NIL, [])])
+            print defs[fapp].stringify()
+
+            j = 0
+            for this_id, ocu_this, k in heads:
+                fconstr = k.fsym
+                ccond   = guard
+                for that_id, that_ocu, hed in heads:
+                    if that_id is this_id:
+                        continue
+                    ccond = Compound(AND, [
+                        Compound(CHR_PARTNER, [hed, that_id, wrap(that_ocu)]),
+                        ccond])
+                # name cond by occurrence: 'name.N'
+                fccond = Atom(name + ".%d" % ocu_this, len(a_args) + fconstr.arity)
+                assert fccond not in defs
+                # Need to insert k.fsym.arity
+                # variables to front of a_args.
+                defs[fccond] = Compound(CONS, [
+                    Compound(CLAUSE, [Compound(fccond, k.args + a_args), ccond]),
+                    Compound(NIL, [])])
+                print defs[fccond].stringify()
+                try:
+                    constraints[fconstr].append((fccond, fapp, j))
+                except KeyError as _:
+                    constraints[fconstr] = [(fccond, fapp, j)]
+                j += 1
+
         else:
             raise ValueError("machine.load received a non-program")
+
+    # For every constraint...
+    for fconstr, occurs in constraints.iteritems():
+        k_args = []
+        for _ in range(fconstr.arity):
+            k_args.append(Variable(varno))
+            varno += 1
+        this_id = Variable(varno)
+        varno += 1
+        goal = Compound(CHR_SUSPEND1, [this_id])
+
+        for fccond, fapp, j in occurs:
+            a_args = []
+            for i in range(fapp.arity):
+                if i == j:
+                    a_args.append(this_id)
+                else:
+                    a_args.append(Variable(varno))
+                    varno += 1
+            c2 = Compound(COND2, [
+                Compound(AND, [
+                    Compound(CHR_ALIVE, [this_id]),
+                    Compound(fccond, k_args + a_args)
+                ]),
+                Compound(fapp, list(a_args))])
+            goal = Compound(AND, [c2, goal])
+        # finalize the goal with chr_add_constraint(head(X...), ID)
+        head = Compound(fconstr, k_args)
+        goal = Compound(AND, [
+            Compound(CHR_ADD_CONSTRAINT, [
+                head,
+                this_id]), goal])
+
+        defs[fconstr] = Compound(CONS, [
+            Compound(CLAUSE, [head, goal]),
+            Compound(NIL, [])])
+        print defs[fconstr].stringify()
+
     return Program(defs)
+
+# Find every free occurrence of variables in the list of items.
+def find_free(items):
+    free = {}
+    for item in items:
+        find_free_(item.unroll(), free)
+    return free
+
+def find_free_(item, free):
+    if isinstance(item, Variable):
+        free[item] = None
+    elif isinstance(item, Compound):
+        for a in item.args:
+            find_free_(a.unroll(), free)
 
 class Program:
     def __init__(self, defs):
