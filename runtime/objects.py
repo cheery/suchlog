@@ -201,35 +201,47 @@ def as_list(cons):
         else:
             raise ValueError("internal function as_list received non-list")
 
+@specialize.argtype(0)
+def wrap(a):
+    if isinstance(a, bool):
+        return success if a else failure
+    if isinstance(a, int):
+        return Integer(rbigint.fromint(a))
+    assert False, ""
+
 # Any mutation to any data structure must be
 # recorded in the trail.
 class Trail:
-    def __init__(self, success, conj, disj, next_varno):
+    def __init__(self, conj, disj, next_varno):
         self.sofar = []
-        self.success = success
         self.conj = conj
         self.disj = disj
         self.next_varno = next_varno
-        self.copying = False
+        self.backtrack = 0
+        self.next_chrid = 0
+        self.chr_by_id = {}
+        self.chr_by_fsym = {}
+        self.chr_history = {}
+        self.chr_active = {}
 
-    def next_goal(self):
+    def next_goal(self, cb):
         assert isinstance(self.conj, Compound)
         if self.conj.fsym is AND:
             goal = self.conj.args[0]
             self.conj = self.conj.args[1]
             return goal
         elif self.conj.fsym is TRUE:
-            if self.success():
+            if cb.signal(self):
                 self.disj = []
             else:
                 self.conj = failure
-                return self.next_goal()
+                return self.next_goal(cb)
         elif self.conj.fsym is FALSE:
             if len(self.disj) == 0:
                 return None
             t, self.conj = self.disj.pop()
             self.undo(t)
-            return self.next_goal()
+            return self.next_goal(cb)
         else:
             goal = self.conj
             self.conj = success
@@ -254,8 +266,9 @@ class Trail:
         return len(self.sofar)
 
     def push(self, action):
-        if len(self.disj) > 0 or self.copying:
-            self.sofar.append(action)
+        # Concluded this might not work properly.
+        #if len(self.disj) > 0 or self.backtrack > 0:
+        self.sofar.append(action)
 
     def undo(self, whereto):
         while len(self.sofar) != whereto:
@@ -267,11 +280,20 @@ class Trail:
         return var
 
     def variant(self, obj):
-        self.copying = True
+        self.backtrack += 1
         t = self.note()
         ret = obj.copy(self)
         self.undo(t)
-        self.copying = False
+        self.backtrack -= 1
+        return ret
+
+    def unify(self, a, b):
+        self.backtrack += 1
+        t = self.note()
+        ret = a.unify(self, b)
+        if not ret:
+            self.undo(t)
+        self.backtrack -= 1
         return ret
 
     def bind(self, this, value):
@@ -286,6 +308,37 @@ class Trail:
             this.goal = goal
         else:
             this.goal = Compound(AND, [goal, this.goal])
+
+    def chr_add_constraint(self, chrid, c):
+        self.chr_active[chrid] = None
+        self.chr_by_id[chrid] = c
+        self.chr_history[chrid] = {}
+        try:
+            self.chr_by_fsym[c.fsym][chrid] = None
+        except KeyError as _:
+            self.chr_by_fsym[c.fsym] = {chrid:None}
+        self.push(AddedConstraint(self, chrid, c.fsym))
+
+    def chr_activate(self, chrid):
+        self.chr_active[chrid] = None
+        self.push(Activated(self, chrid))
+
+    def chr_suspend(self, chrid):
+        if chrid in self.chr_active:
+            self.chr_active.pop(chrid)
+            self.push(Deactivated(self, chrid))
+
+    def chr_suspend_2(self, chrid, occur):
+        self.chr_suspend(chrid)
+        self.chr_history[chrid][occur] = None
+        self.push(Propagated(self, chrid, occur))
+
+    def chr_kill(self, chrid):
+        self.chr_suspend(chrid)
+        prop = self.chr_history.pop(chrid)
+        cons = self.chr_by_id.pop(chrid)
+        self.chr_by_fsym[cons.fsym].pop(chrid)
+        self.push(Killed(self, chrid, prop, cons))
 
 class Action(object):
     pass
@@ -304,3 +357,51 @@ class Frozen(Action):
 
     def reset(self):
         self.this.goal = self.previous_goal
+
+class AddedConstraint(Action):
+    def __init__(self, mach, chrid, fsym):
+        self.mach = mach
+        self.chrid = chrid
+        self.fsym = fsym
+
+    def reset(self):
+        self.mach.chr_by_id.pop(self.chrid)
+        self.mach.chr_by_fsym[self.fsym].pop(self.chrid)
+        self.mach.chr_active.pop(self.chrid)
+
+class Activated(Action):
+    def __init__(self, mach, chrid):
+        self.mach = mach
+        self.chrid = chrid
+
+    def reset(self):
+        self.mach.chr_active.pop(self.chrid)
+
+class Deactivated(Action):
+    def __init__(self, mach, chrid):
+        self.mach = mach
+        self.chrid = chrid
+
+    def reset(self):
+        self.mach.chr_active[self.chrid] = None
+
+class Propagated(Action):
+    def __init__(self, mach, chrid, occur):
+        self.mach  = mach
+        self.chrid = chrid
+        self.occur = occur
+
+    def reset(self):
+        self.mach.chr_history[self.chrid].pop(self.occur)
+
+class Killed(Action):
+    def __init__(self, mach, chrid, prop, cons):
+        self.mach  = mach
+        self.chrid = chrid
+        self.prop = prop
+        self.cons = cons
+
+    def reset(self):
+        self.mach.chr_history[self.chrid] = self.prop
+        self.mach.chr_by_id[self.chrid] = self.cons
+        self.mach.chr_by_fsym[self.cons.fsym][self.chrid] = None

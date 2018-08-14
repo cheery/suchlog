@@ -8,6 +8,65 @@ good_weather <-
    calm
 
 main <-
-   append(cons(1, nil), cons(2, nil), Y)
-   write(hello(world, Y))
-   exit(0)
+   red
+   green
+   chr_printout
+   weak_to_move(X, Y)
+   write(weak_to_move(X, Y))
+
+   #weak_to_move(charmander, bubble)
+   #append(cons(1, nil), cons(2, nil), Y)
+   #write(hello(world, Y))
+   #exit(0)
+
+super_effective(fire, grass)
+super_effective(grass, water)
+super_effective(water, fire)
+
+pokemon_type(charmander, fire)
+pokemon_type(bulbasaur, grass)
+pokemon_type(squirtle, water)
+
+move_type(ember, fire)
+move_type(absorb, grass)
+move_type(bubble, water)
+
+weak_to_move(Pokemon, Move) <-
+  move_type(Move, MoveType)
+  pokemon_type(Pokemon, PokemonType)
+  super_effective(MoveType, PokemonType)
+
+green <-
+    chr_add_constraint(green, ID)
+    cond(green_guard_1(ID, ID_1), green_dispatch_1(ID, ID_1))
+    chr_suspend(ID)
+
+green_guard_1(ID, ID_1) <-
+    chr_alive(ID)
+    chr_partner(red, ID_1, 5) # Red occurrence=5
+
+green_dispatch_1(ID, ID_1) <-
+    chr_kill(ID)
+    chr_kill(ID_1)
+    brown
+
+red <-
+    chr_add_constraint(red, ID)
+    cond(red_guard_1(ID, ID_1), red_dispatch_1(ID, ID_1))
+    chr_suspend(ID)
+
+red_guard_1(ID, ID_1) <-
+    chr_alive(ID)
+    chr_partner(green, ID_1, 4) # The last one is occurrence number.
+
+red_dispatch_1(ID, ID_1) <-
+    chr_kill(ID)
+    chr_kill(ID_1)
+    # alternative: chr_suspend(ID, 4)
+    brown
+
+brown <-
+    chr_add_constraint(brown, ID)
+    chr_suspend(ID)
+
+# the chr_partner will produce history entry to be added.
