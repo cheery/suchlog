@@ -8,9 +8,12 @@ good_weather <-
    calm
 
 main <-
-   red
-   green
-   chr_printout
+   leq(1, Y)
+   write(first) chr_printout
+   leq(1, Y)
+   leq(Y, Z)
+   write(second) chr_printout
+
    weak_to_move(X, Y)
    write(weak_to_move(X, Y))
 
@@ -36,10 +39,10 @@ weak_to_move(Pokemon, Move) <-
   pokemon_type(Pokemon, PokemonType)
   super_effective(MoveType, PokemonType)
 
-reflexivity  @ leq(X, Y)            | same(X, Y) <=> true
-antisymmetry @ leq(X, Y), leq(Y, X)              <=> X = Y
-transitivity @ leq(X, Y), leq(Y, Z)              ==> leq(X, Z)
-idempotence  @ leq(X, Y); leq(X, Y)              <=> true
+reflexivity  @ leq(X, Y)            | same(X, Y)                  <=> true
+antisymmetry @ leq(X, Y), leq(Z, W) | and(same(X, W), same(Y, Z)) <=> X = Y
+transitivity @ leq(X, Y), leq(W, Z) | same(Y, W)                  ==> leq(X, Z)
+idempotence  @ leq(X, Y); leq(Z, W) | and(same(X, Z), same(Y, W)) <=> true
 
 green <-
     chr_add_constraint(green, ID)

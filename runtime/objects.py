@@ -46,7 +46,7 @@ class Compound(Object):
         return False
 
     def same(self, t):
-        return t.same_compound(self)
+        return t.unroll().same_compound(self)
 
     def same_compound(self, t):
         if not self.fsym is t.fsym:
@@ -84,6 +84,7 @@ class Integer(Object):
         return False
 
     def same(self, t):
+        t = t.unroll()
         if isinstance(t, Integer):
             return self.bignum.eq(t.bignum)
         return False
@@ -223,6 +224,7 @@ class Trail:
         self.chr_by_fsym = {}
         self.chr_history = {}
         self.chr_active = {}
+        self.chr_debug = False
 
     def next_goal(self, cb):
         assert isinstance(self.conj, Compound)
@@ -310,7 +312,8 @@ class Trail:
             this.goal = Compound(AND, [goal, this.goal])
 
     def chr_add_constraint(self, chrid, c):
-        self.chr_active[chrid] = None
+        if self.chr_debug:
+            print('added constraint %d' % chrid)
         self.chr_by_id[chrid] = c
         self.chr_history[chrid] = {}
         try:
@@ -320,20 +323,28 @@ class Trail:
         self.push(AddedConstraint(self, chrid, c.fsym))
 
     def chr_activate(self, chrid):
+        #if self.chr_debug:
+        #    print('activated constraint %d' % chrid)
         self.chr_active[chrid] = None
         self.push(Activated(self, chrid))
 
     def chr_suspend(self, chrid):
+        #if self.chr_debug:
+        #    print('suspended constraint %d' % chrid)
         if chrid in self.chr_active:
             self.chr_active.pop(chrid)
             self.push(Deactivated(self, chrid))
 
     def chr_suspend_2(self, chrid, occur):
+        if self.chr_debug:
+            print('propagated constraint %d (%d)' % (chrid, occur))
         self.chr_suspend(chrid)
         self.chr_history[chrid][occur] = None
         self.push(Propagated(self, chrid, occur))
 
     def chr_kill(self, chrid):
+        if self.chr_debug:
+            print('killed constraint %d' % chrid)
         self.chr_suspend(chrid)
         prop = self.chr_history.pop(chrid)
         cons = self.chr_by_id.pop(chrid)
@@ -367,7 +378,8 @@ class AddedConstraint(Action):
     def reset(self):
         self.mach.chr_by_id.pop(self.chrid)
         self.mach.chr_by_fsym[self.fsym].pop(self.chrid)
-        self.mach.chr_active.pop(self.chrid)
+        if self.mach.chr_debug:
+            print('- removed constraint', self.chrid)
 
 class Activated(Action):
     def __init__(self, mach, chrid):
@@ -376,6 +388,8 @@ class Activated(Action):
 
     def reset(self):
         self.mach.chr_active.pop(self.chrid)
+        #if self.mach.chr_debug:
+        #    print('- removed activation %d' % self.chrid)
 
 class Deactivated(Action):
     def __init__(self, mach, chrid):
@@ -384,6 +398,8 @@ class Deactivated(Action):
 
     def reset(self):
         self.mach.chr_active[self.chrid] = None
+        #if self.mach.chr_debug:
+        #    print('- removed deactivation %d' % self.chrid)
 
 class Propagated(Action):
     def __init__(self, mach, chrid, occur):
@@ -393,6 +409,8 @@ class Propagated(Action):
 
     def reset(self):
         self.mach.chr_history[self.chrid].pop(self.occur)
+        if self.mach.chr_debug:
+            print('- removed propagation %d (%d)' % (self.chrid, self.occur))
 
 class Killed(Action):
     def __init__(self, mach, chrid, prop, cons):
@@ -405,3 +423,5 @@ class Killed(Action):
         self.mach.chr_history[self.chrid] = self.prop
         self.mach.chr_by_id[self.chrid] = self.cons
         self.mach.chr_by_fsym[self.cons.fsym][self.chrid] = None
+        if self.mach.chr_debug:
+            print('- removed kill %d' % self.chrid)

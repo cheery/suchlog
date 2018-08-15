@@ -12,7 +12,7 @@ UNIFY = atom("=", 2)
 COND2 = atom("cond", 2)
 DEF = atom("DEF", 2)
 
-def load(code, varno=100):
+def load(code, varno=100, debug=False):
     defs = {}
     constraints = {}
     occurrenceno = 0
@@ -58,7 +58,7 @@ def load(code, varno=100):
                 OCU_THIS = occurrenceno
                 varno += 1
                 occurrenceno += 1
-                heads.append((ID_THIS, OCU_THIS, k))
+                heads.append((ID_THIS, OCU_THIS, d))
                 goal = Compound(AND, [
                     Compound(CHR_KILL, [ID_THIS]),
                     goal])
@@ -76,27 +76,30 @@ def load(code, varno=100):
                     Compound(fapp, list(a_args)),
                     goal]),
                 Compound(NIL, [])])
-            print defs[fapp].stringify()
+            if debug:
+                print clause.stringify()
+                print defs[fapp].stringify()
 
             j = 0
-            for this_id, ocu_this, k in heads:
+            for this_id, this_ocu, k in heads:
                 fconstr = k.fsym
                 ccond   = guard
                 for that_id, that_ocu, hed in heads:
-                    if that_id is this_id:
+                    if that_ocu is this_ocu:
                         continue
                     ccond = Compound(AND, [
                         Compound(CHR_PARTNER, [hed, that_id, wrap(that_ocu)]),
                         ccond])
                 # name cond by occurrence: 'name.N'
-                fccond = Atom(name + ".%d" % ocu_this, len(a_args) + fconstr.arity)
+                fccond = Atom(name + ".%d" % this_ocu, len(a_args) + fconstr.arity)
                 assert fccond not in defs
                 # Need to insert k.fsym.arity
                 # variables to front of a_args.
                 defs[fccond] = Compound(CONS, [
                     Compound(CLAUSE, [Compound(fccond, k.args + a_args), ccond]),
                     Compound(NIL, [])])
-                print defs[fccond].stringify()
+                if debug:
+                    print defs[fccond].stringify()
                 try:
                     constraints[fconstr].append((fccond, fapp, j))
                 except KeyError as _:
@@ -141,7 +144,8 @@ def load(code, varno=100):
         defs[fconstr] = Compound(CONS, [
             Compound(CLAUSE, [head, goal]),
             Compound(NIL, [])])
-        print defs[fconstr].stringify()
+        if debug:
+            print defs[fconstr].stringify()
 
     return Program(defs)
 
@@ -241,8 +245,11 @@ def solve(mach, program, cb, debug=False):
         elif goal.fsym is CHR_ALIVE:
             a = goal.args[0].unroll()
             assert isinstance(a, Integer)
-            if a.bignum.toint() not in mach.chr_by_id:
+            chrid = a.bignum.toint()
+            if chrid not in mach.chr_by_id:
                 mach.conj = failure
+            else:
+                mach.chr_activate(chrid)
         elif goal.fsym is CHR_PARTNER:
             pattern    = goal.args[0].unroll()
             assert isinstance(pattern, Compound)
@@ -255,6 +262,8 @@ def solve(mach, program, cb, debug=False):
             this = 0
             for chrid in patterns:
                 if occur in mach.chr_history.get(chrid, {}):
+                    continue
+                if chrid in mach.chr_active:
                     continue
                 if this is not None:
                     mach.choicepoint([
@@ -300,7 +309,9 @@ def solve(mach, program, cb, debug=False):
             nxt = clause.args[1]
             if nxt.fsym is not NIL:
                 mach.choicepoint([Compound(DEF, [head, nxt])])
-            mach.expand([Compound(UNIFY, [head, top.args[0]]), top.args[1]])
+            mach.expand([Compound(UNIFY, [head, top.args[0]]),
+                #Compound(WRITE, [head]),
+                top.args[1]])
         elif goal.fsym in program.defs:
             clauses = program.defs[goal.fsym]
             mach.invoke(Compound(DEF, [goal, clauses]))
