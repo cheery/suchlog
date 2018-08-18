@@ -1,7 +1,7 @@
-from rpython.rlib.objectmodel import specialize, not_rpython
+from rpython.rlib.objectmodel import specialize, not_rpython, r_dict
 from rpython.rlib.rbigint import rbigint
 from rpython.rlib.rstring import NumberStringParser
-
+from rpython.rlib.rarithmetic import intmask
 
 class Object:
     pass
@@ -33,11 +33,21 @@ class Compound(Object):
         out.append(")")
         return "".join(out)
 
-    def copy(self, mach):
+    def copy(self, mach, memo):
         args = []
         for arg in self.args:
-            args.append(arg.copy(mach))
+            args.append(arg.copy(mach, memo))
         return Compound(self.fsym, args)
+
+    def match(self, t, memo):
+        if not isinstance(t, Compound):
+            return False
+        if not self.fsym is t.fsym:
+            return False
+        for i in range(self.fsym.arity):
+            if not self.args[i].match(t.args[i], memo):
+                return False
+        return True
 
     def occurs(self, t):
         for arg in self.args:
@@ -77,8 +87,13 @@ class Integer(Object):
     def stringify(self):
         return self.bignum.format(digits[:10])
 
-    def copy(self, mach):
+    def copy(self, mach, memo):
         return self
+
+    def match(self, t, memo):
+        if isinstance(t, Integer):
+            return self.bignum.eq(t.bignum)
+        return False
 
     def occurs(self, t):
         return False
@@ -119,21 +134,35 @@ class Variable(Object):
         self.instance = self
         self.varno = varno
         self.goal = None
+        self.attr = {}
 
     def stringify(self):
         if self.instance is self:
             return "_" + str(self.varno)
         return self.instance.stringify()
 
-    # Note that this is not a generic copy operation.
-    # Any hidden and instantiated variable should be
-    # removed before using this operation.
-    def copy(self, mach):
+    def copy(self, mach, memo):
         if self.instance is self:
-            var = mach.new_var()
-            mach.bind(self, var)
-            return var
-        return self.instance
+            try:
+                return memo[self]
+            except KeyError:
+                var = mach.new_var()
+                memo[self] = var
+                return var
+        return self.instance.copy(mach, memo)
+
+    def match(self, t, memo):
+        if self.instance is not self:
+            return self.instance.match(t, memo)
+        if self in memo:
+            return memo[self].same(t)
+        t = t.unroll()
+        if self is t:
+            return True
+        if t.occurs(self):
+            return False
+        memo[self] = t
+        return True
 
     def occurs(self, t):
         if self.instance is self:
@@ -186,6 +215,9 @@ OR  = atom("or", 2)
 TRUE = atom("true", 0)
 FALSE = atom("false", 0)
 
+UNIFY_ATTS = atom("unify_atts", 2)
+BIND_HARD = atom("bind_hard", 2)
+
 success = Compound(TRUE, [])
 failure = Compound(FALSE, [])
 
@@ -222,9 +254,10 @@ class Trail:
         self.next_chrid = 0
         self.chr_by_id = {}
         self.chr_by_fsym = {}
-        self.chr_history = {}
-        self.chr_active = {}
+        self.chr_history_set = r_dict(hist_eq, hist_hash, force_non_null=True)
+        self.chr_occur = {}
         self.chr_debug = False
+        self.chr_lock = False
 
     def next_goal(self, cb):
         assert isinstance(self.conj, Compound)
@@ -281,13 +314,10 @@ class Trail:
         self.next_varno += 1
         return var
 
-    def variant(self, obj):
-        self.backtrack += 1
-        t = self.note()
-        ret = obj.copy(self)
-        self.undo(t)
-        self.backtrack -= 1
-        return ret
+    def variant(self, obj, memo=None):
+        if memo is None:
+            memo = {}
+        return obj.copy(self, memo)
 
     def unify(self, a, b):
         self.backtrack += 1
@@ -299,6 +329,15 @@ class Trail:
         return ret
 
     def bind(self, this, value):
+        if len(this.attr) > 0:
+            self.expand([
+                Compound(UNIFY_ATTS, [this, value]),
+                Compound(BIND_HARD, [this, value])
+            ])
+        else:
+            self.bind_hard(this, value)
+
+    def bind_hard(self, this, value):
         this.instance = value
         self.push(Bound(this))
         if this.goal is not None:
@@ -315,41 +354,53 @@ class Trail:
         if self.chr_debug:
             print('added constraint %d' % chrid)
         self.chr_by_id[chrid] = c
-        self.chr_history[chrid] = {}
+        self.chr_occur[chrid] = []
         try:
             self.chr_by_fsym[c.fsym][chrid] = None
         except KeyError as _:
             self.chr_by_fsym[c.fsym] = {chrid:None}
         self.push(AddedConstraint(self, chrid, c.fsym))
 
-    def chr_activate(self, chrid):
-        #if self.chr_debug:
-        #    print('activated constraint %d' % chrid)
-        self.chr_active[chrid] = None
-        self.push(Activated(self, chrid))
-
-    def chr_suspend(self, chrid):
-        #if self.chr_debug:
-        #    print('suspended constraint %d' % chrid)
-        if chrid in self.chr_active:
-            self.chr_active.pop(chrid)
-            self.push(Deactivated(self, chrid))
-
-    def chr_suspend_2(self, chrid, occur):
-        if self.chr_debug:
-            print('propagated constraint %d (%d)' % (chrid, occur))
-        self.chr_suspend(chrid)
-        self.chr_history[chrid][occur] = None
-        self.push(Propagated(self, chrid, occur))
-
     def chr_kill(self, chrid):
         if self.chr_debug:
             print('killed constraint %d' % chrid)
-        self.chr_suspend(chrid)
-        prop = self.chr_history.pop(chrid)
+        vectors = self.chr_occur.pop(chrid)
+        for vector in vectors:
+            self.remove_vector(vector)
         cons = self.chr_by_id.pop(chrid)
         self.chr_by_fsym[cons.fsym].pop(chrid)
-        self.push(Killed(self, chrid, prop, cons))
+        self.push(Killed(self, chrid, vectors, cons))
+
+    def chr_step_history(self, vector):
+        if vector in self.chr_history_set:
+            return True
+        self.add_vector(vector)
+        self.push(Propagated(self, vector))
+        return False
+
+    def put_atts(self, var, fsym, value):
+        assert isinstance(var, Variable)
+        try:
+            prev = var.attr[fsym]
+        except KeyError as _:
+            prev = None
+        var.attr[fsym] = value
+        self.push(PutAtts(var, fsym, prev))
+
+    def add_vector(self, vector):
+        self.chr_history_set[vector] = None
+        for chrid in vector:
+            self.chr_occur[chrid].append(vector)
+
+    def remove_vector(self, vector):
+        self.chr_history_set.pop(vector)
+        for chrid in vector:
+            try:
+                occurs = self.chr_occur[chrid]
+            except KeyError as _:
+                pass
+            else:
+                occurs.remove(vector)
 
 class Action(object):
     pass
@@ -381,47 +432,54 @@ class AddedConstraint(Action):
         if self.mach.chr_debug:
             print('- removed constraint', self.chrid)
 
-class Activated(Action):
-    def __init__(self, mach, chrid):
-        self.mach = mach
-        self.chrid = chrid
-
-    def reset(self):
-        self.mach.chr_active.pop(self.chrid)
-        #if self.mach.chr_debug:
-        #    print('- removed activation %d' % self.chrid)
-
-class Deactivated(Action):
-    def __init__(self, mach, chrid):
-        self.mach = mach
-        self.chrid = chrid
-
-    def reset(self):
-        self.mach.chr_active[self.chrid] = None
-        #if self.mach.chr_debug:
-        #    print('- removed deactivation %d' % self.chrid)
-
-class Propagated(Action):
-    def __init__(self, mach, chrid, occur):
-        self.mach  = mach
-        self.chrid = chrid
-        self.occur = occur
-
-    def reset(self):
-        self.mach.chr_history[self.chrid].pop(self.occur)
-        if self.mach.chr_debug:
-            print('- removed propagation %d (%d)' % (self.chrid, self.occur))
-
 class Killed(Action):
-    def __init__(self, mach, chrid, prop, cons):
+    def __init__(self, mach, chrid, vectors, cons):
         self.mach  = mach
         self.chrid = chrid
-        self.prop = prop
+        self.vectors = vectors
         self.cons = cons
 
     def reset(self):
-        self.mach.chr_history[self.chrid] = self.prop
+        for vector in self.vectors:
+            self.mach.add_vector(vector)
+        self.mach.chr_occur[self.chrid] = self.vectors
         self.mach.chr_by_id[self.chrid] = self.cons
         self.mach.chr_by_fsym[self.cons.fsym][self.chrid] = None
         if self.mach.chr_debug:
             print('- removed kill %d' % self.chrid)
+
+class PutAtts(Action):
+    def __init__(self, var, fsym, prev):
+        self.var = var
+        self.fsym = fsym
+        self.prev = prev
+
+    def reset(self):
+        prev = self.prev
+        if prev is None:
+            self.var.attr.pop(self.fsym)
+        else:
+            self.var.attr[self.fsym] = prev
+
+class Propagated(Action):
+    def __init__(self, mach, vector):
+        self.mach = mach
+        self.vector = vector
+
+    def reset(self):
+        self.mach.remove_vector(self.vector)
+
+def hist_eq(a, b):
+    return a == b
+    
+def hist_hash(a):
+    mult = 1000003
+    x = 0x345678
+    z = len(a)
+    for chrid in a:
+        y = chrid
+        x = (x ^ y) * mult
+        z -= 1
+        mult += 82520 + z + z
+    x += 97531
+    return intmask(x)

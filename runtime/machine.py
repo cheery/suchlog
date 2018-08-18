@@ -1,7 +1,7 @@
 from objects import Atom, Compound, Integer, Variable
 from objects import known_atoms, atom, as_list, wrap
 from objects import CONS, NIL, AND, OR, TRUE, FALSE, failure, success
-from objects import Trail
+from objects import Trail, UNIFY_ATTS, BIND_HARD
 import os
 
 CLAUSE = atom("<-", 2)
@@ -14,6 +14,7 @@ DEF = atom("DEF", 2)
 
 def load(code, varno=100, debug=False):
     defs = {}
+    chrs = []
     constraints = {}
     occurrenceno = 0
     for clause in reversed(as_list(code)):
@@ -27,10 +28,6 @@ def load(code, varno=100, debug=False):
                 rest = Compound(NIL, [])
             defs[head.fsym] = Compound(CONS, [clause, rest])
         elif clause.fsym is CONSTRAINT_RULE:
-            # Add every free variable that appears between keep/drop/guard and goal
-            # Add free variable for every ID
-            # into goal: prepend chr_kill for 'drops'
-            #            prepend chr_suspend(X, OCU) for 'keeps'
             name = clause.args[0]
             assert isinstance(name, Compound)
             name = name.fsym.name
@@ -38,134 +35,25 @@ def load(code, varno=100, debug=False):
             drop = as_list(clause.args[2])
             guard = clause.args[3]
             goal = clause.args[4]
-            a = find_free(keep + drop + [guard])
-            b = find_free([goal])
-            heads = []
-            a_args = []
-            v_args = []
-            for k in keep:
-                ID_THIS = Variable(varno)
-                OCU_THIS = occurrenceno
-                varno += 1
-                occurrenceno += 1
-                heads.append((ID_THIS, OCU_THIS, k))
-                goal = Compound(AND, [
-                    Compound(CHR_SUSPEND2, [ID_THIS, wrap(OCU_THIS)]),
-                    goal])
-                a_args.append(ID_THIS)
-            for d in drop:
-                ID_THIS = Variable(varno)
-                OCU_THIS = occurrenceno
-                varno += 1
-                occurrenceno += 1
-                heads.append((ID_THIS, OCU_THIS, d))
-                goal = Compound(AND, [
-                    Compound(CHR_KILL, [ID_THIS]),
-                    goal])
-                a_args.append(ID_THIS)
-            for v in b:
-                if v not in a:
-                    continue
-                a_args.append(v)
-                v_args.append(v)
-            # Create new hidden fsym with 'name.apply'
-            fapp = Atom(name + ".apply", len(a_args))
-            assert fapp not in defs
-            defs[fapp] = Compound(CONS, [
-                Compound(CLAUSE, [
-                    Compound(fapp, list(a_args)),
-                    goal]),
-                Compound(NIL, [])])
-            if debug:
-                print clause.stringify()
-                print defs[fapp].stringify()
-
-            j = 0
-            for this_id, this_ocu, k in heads:
-                fconstr = k.fsym
-                ccond   = guard
-                for that_id, that_ocu, hed in heads:
-                    if that_ocu is this_ocu:
-                        continue
-                    ccond = Compound(AND, [
-                        Compound(CHR_PARTNER, [hed, that_id, wrap(that_ocu)]),
-                        ccond])
-                # name cond by occurrence: 'name.N'
-                fccond = Atom(name + ".%d" % this_ocu, len(a_args) + fconstr.arity)
-                assert fccond not in defs
-                # Need to insert k.fsym.arity
-                # variables to front of a_args.
-                defs[fccond] = Compound(CONS, [
-                    Compound(CLAUSE, [Compound(fccond, k.args + a_args), ccond]),
-                    Compound(NIL, [])])
-                if debug:
-                    print defs[fccond].stringify()
-                try:
-                    constraints[fconstr].append((fccond, fapp, j))
-                except KeyError as _:
-                    constraints[fconstr] = [(fccond, fapp, j)]
-                j += 1
-
+            this = CHR(name, keep + drop, len(keep), guard, goal)
+            chrs.append(this)
+            index = 0
+            for k in this.pattern:
+                assert isinstance(k, Compound)
+                if k.fsym in constraints:
+                    constraints[k.fsym].insert(0, (this, index))
+                else:
+                    constraints[k.fsym] = [(this, index)]
+                index += 1
         else:
             raise ValueError("machine.load received a non-program")
 
-    # For every constraint...
-    for fconstr, occurs in constraints.iteritems():
-        k_args = []
-        for _ in range(fconstr.arity):
-            k_args.append(Variable(varno))
-            varno += 1
-        this_id = Variable(varno)
-        varno += 1
-        goal = Compound(CHR_SUSPEND1, [this_id])
-
-        for fccond, fapp, j in occurs:
-            a_args = []
-            for i in range(fapp.arity):
-                if i == j:
-                    a_args.append(this_id)
-                else:
-                    a_args.append(Variable(varno))
-                    varno += 1
-            c2 = Compound(COND2, [
-                Compound(AND, [
-                    Compound(CHR_ALIVE, [this_id]),
-                    Compound(fccond, k_args + a_args)
-                ]),
-                Compound(fapp, list(a_args))])
-            goal = Compound(AND, [c2, goal])
-        # finalize the goal with chr_add_constraint(head(X...), ID)
-        head = Compound(fconstr, k_args)
-        goal = Compound(AND, [
-            Compound(CHR_ADD_CONSTRAINT, [
-                head,
-                this_id]), goal])
-
-        defs[fconstr] = Compound(CONS, [
-            Compound(CLAUSE, [head, goal]),
-            Compound(NIL, [])])
-        if debug:
-            print defs[fconstr].stringify()
-
-    return Program(defs)
-
-# Find every free occurrence of variables in the list of items.
-def find_free(items):
-    free = {}
-    for item in items:
-        find_free_(item.unroll(), free)
-    return free
-
-def find_free_(item, free):
-    if isinstance(item, Variable):
-        free[item] = None
-    elif isinstance(item, Compound):
-        for a in item.args:
-            find_free_(a.unroll(), free)
+    return Program(defs, constraints)
 
 class Program:
-    def __init__(self, defs):
+    def __init__(self, defs, constraints):
         self.defs = defs
+        self.constraints = constraints
 
     def solve(self, cb, goal, next_varno):
         conj = goal
@@ -176,14 +64,12 @@ class Program:
 WRITE = atom("write", 1)
 EXIT = atom("exit", 1)
 
-CHR_ADD_CONSTRAINT = atom("chr_add_constraint", 2)
-CHR_ALIVE = atom("chr_alive", 1)
-CHR_PARTNER = atom("chr_partner", 3)
-CHR_ACTIVATE = atom("chr_activate", 1)
-CHR_SUSPEND1 = atom("chr_suspend", 1)
-CHR_SUSPEND2 = atom("chr_suspend", 2)
-CHR_KILL     = atom("chr_kill", 1)
+CHR_RESUME   = atom("chr_resume", 2)
 CHR_PRINTOUT = atom("chr_printout", 0)
+
+GET_ATTS = atom("get_atts", 2)
+PUT_ATTS = atom("put_atts", 2)
+LIST_ATTS = atom("list_atts", 2)
 
 def solve(mach, program, cb, debug=False):
     goal = mach.next_goal(cb)
@@ -216,6 +102,7 @@ def solve(mach, program, cb, debug=False):
             right = goal.args[1]
             if not mach.unify(left, right):
                 mach.conj = failure
+        # I wonder if this is still required, or if it should be improved.
         elif goal.fsym is COND2:
             mach.backtrack += 1
             t = mach.note()
@@ -234,72 +121,38 @@ def solve(mach, program, cb, debug=False):
                 mach.invoke(cconj)
             else:
                 mach.undo(t)
-        elif goal.fsym is CHR_ADD_CONSTRAINT:
-            c = goal.args[0]
-            assert isinstance(c, Compound)
-            chrid = mach.next_chrid
-            mach.next_chrid += 1
-            mach.chr_add_constraint(chrid, c)
-            if not mach.unify(goal.args[1], wrap(chrid)):
-                mach.conj = failure
-        elif goal.fsym is CHR_ALIVE:
-            a = goal.args[0].unroll()
-            assert isinstance(a, Integer)
-            chrid = a.bignum.toint()
-            if chrid not in mach.chr_by_id:
+        elif goal.fsym is GET_ATTS:
+            var = goal.args[0]
+            spec = goal.args[1]
+            assert isinstance(spec, Compound)
+            val = var.attr.get(spec.fsym, None)
+            if val is None:
                 mach.conj = failure
             else:
-                mach.chr_activate(chrid)
-        elif goal.fsym is CHR_PARTNER:
-            pattern    = goal.args[0].unroll()
-            assert isinstance(pattern, Compound)
-            pattern_id = goal.args[1]
-            occur      = goal.args[2].unroll()
-            assert isinstance(occur, Integer)
-            occur = occur.bignum.toint()
-            patterns = mach.chr_by_fsym.get(pattern.fsym, {})
-            found = False
-            this = 0
-            for chrid in patterns:
-                if occur in mach.chr_history.get(chrid, {}):
-                    continue
-                if chrid in mach.chr_active:
-                    continue
-                if this is not None:
-                    mach.choicepoint([
-                        Compound(UNIFY, [pattern, mach.chr_by_id[chrid]]),
-                        Compound(UNIFY, [pattern_id, wrap(chrid)]),
-                        Compound(CHR_ACTIVATE, [wrap(chrid)])])
-                else:
-                    found = True
-                    this = chrid
-            if found:
-                mach.expand([
-                    Compound(UNIFY, [pattern, mach.chr_by_id[this]]),
-                    Compound(UNIFY, [pattern_id, wrap(this)]),
-                    Compound(CHR_ACTIVATE, [wrap(this)])])
+                if not mach.unify(val, spec):
+                    mach.conj = failure
+        elif goal.fsym is PUT_ATTS:
+            var = goal.args[0]
+            spec = goal.args[1]
+            assert isinstance(spec, Compound)
+            mach.put_atts(var, spec.fsym, spec)
+        elif goal.fsym is BIND_HARD:
+            var = goal.args[0]
+            val = goal.args[1]
+            if isinstance(var, Variable) and var.instance is var:
+                mach.bind_hard(var, val)
             else:
+                if not mach.unify(var, val):
+                    mach.conj = failure
+        elif goal.fsym is LIST_ATTS:
+            var = goal.args[0]
+            assert isinstance(var, Variable)
+            ret = goal.args[1]
+            res = Compound(NIL, [])
+            for val in var.attr.itervalues():
+                res = Compound(CONS, [val, res])
+            if not mach.unify(ret, res):
                 mach.conj = failure
-        elif goal.fsym is CHR_ACTIVATE:
-            pattern_id = goal.args[0].unroll()
-            assert isinstance(pattern_id, Integer)
-            mach.chr_activate(pattern_id.bignum.toint())
-        elif goal.fsym is CHR_SUSPEND1:
-            pattern_id = goal.args[0].unroll()
-            assert isinstance(pattern_id, Integer)
-            mach.chr_suspend(pattern_id.bignum.toint())
-        elif goal.fsym is CHR_SUSPEND2:
-            pattern_id = goal.args[0].unroll()
-            assert isinstance(pattern_id, Integer)
-            pattern_id = pattern_id.bignum.toint()
-            occur      = goal.args[1].unroll()
-            assert isinstance(occur, Integer)
-            occur = occur.bignum.toint()
-            mach.chr_suspend_2(pattern_id, occur)
-        elif goal.fsym is CHR_KILL:
-            pattern_id = goal.args[0].unroll()
-            assert isinstance(pattern_id, Integer)
-            mach.chr_kill(pattern_id.bignum.toint())
         elif goal.fsym is DEF:
             head = goal.args[0]
             clause = goal.args[1]
@@ -315,6 +168,10 @@ def solve(mach, program, cb, debug=False):
         elif goal.fsym in program.defs:
             clauses = program.defs[goal.fsym]
             mach.invoke(Compound(DEF, [goal, clauses]))
+        elif goal.fsym in program.constraints:
+            chr_add_constraint(goal, mach, program)
+        elif goal.fsym is CHR_RESUME:
+            chr_resume(goal, mach, program)
         # Implementation of side effects in logic language
         # are bit of a question.
         # This looks like slightly wrong way to do it.
@@ -352,3 +209,119 @@ class CondSuccess(Success):
 class Exiting(Exception):
     def __init__(self, status):
         self.status = status
+
+class CHR:
+    def __init__(self, name, pattern, keep, guard, goal):
+        self.name = name
+        self.pattern = pattern
+        self.keep  = keep
+        self.guard = guard
+        self.goal = goal
+
+# The constraints would be convenient to implement
+# if there were "matching without unification"
+# Also for checking guards the constraint store
+# needs to be locked.
+def chr_add_constraint(goal, mach, program):
+    assert isinstance(goal, Compound)
+    chrid = mach.next_chrid
+    mach.next_chrid += 1
+    mach.chr_add_constraint(chrid, goal)
+    #print 'start resolution:    %d %s' % (chrid, goal.stringify())
+    assert not mach.chr_lock
+    mach.chr_lock = True
+    constraint_resolution(goal.fsym, chrid, mach, program)
+    mach.chr_lock = False
+    #print 'stopped  resolution: %d' % chrid
+
+def chr_resume(goal, mach, program):
+    chrid = goal.args[0]
+    assert isinstance(chrid, Integer)
+    chrid = chrid.bignum.toint()
+    start = goal.args[1]
+    assert isinstance(start, Integer)
+    start = start.bignum.toint()
+    fsym = mach.chr_by_id[chrid].fsym
+    #print 'start resolution:    %d' % chrid
+    assert not mach.chr_lock
+    mach.chr_lock = True
+    constraint_resolution(fsym, chrid, mach, program)
+    mach.chr_lock = False
+    #print 'stopped  resolution: %d' % chrid
+
+def constraint_resolution(fsym, chrid, mach, program, start=0):
+    constraints = program.constraints[fsym]
+    for rule, pivot in constraints[start:]:
+        #print 'checking rule %s:%d' % (rule.name, pivot)
+        memo = execute_rule(rule, pivot, chrid, mach, program)
+        if memo is not None:
+            goal = mach.variant(rule.goal, memo)
+            #print 'success: ' + goal.stringify()
+            if rule.keep <= pivot: # The constraint did not survive.
+                return mach.expand([goal])
+            if start+1 >= len(constraints):
+                return mach.expand([goal])
+            return mach.expand([goal,
+                Compound(CHR_RESUME, [wrap(chrid), wrap(start+1)]) ])
+        start += 1
+
+def execute_rule(rule, pivot, chrid, mach, program):
+    active = {chrid:None}
+    vector = []
+    kills  = {}
+    memo = {}
+    if rule.keep <= pivot:
+        kills[chrid] = None
+    return search_partner(rule, 0, pivot, chrid, mach, program,
+        active, vector, kills, memo)
+
+def search_partner(rule, index, pivot, chrid, mach, program,
+        active, vector, kills, memo):
+    if index >= len(rule.pattern):
+        t = mach.note()
+        mach.backtrack += 1
+        guard = mach.variant(rule.guard, memo)
+        csucc = CondSuccess()
+        conj = mach.conj
+        disj = mach.disj
+        mach.conj = guard
+        mach.disj = []
+        solve(mach, program, csucc)
+        mach.conj = conj
+        mach.disj = disj
+        mach.backtrack -= 1
+        if csucc.success:
+            if rule.keep == len(rule.pattern):
+                if mach.chr_step_history(list(vector)):
+                    return None
+            for k in kills.iterkeys():
+                mach.chr_kill(k)
+            return memo
+        else:
+            mach.undo(t)
+            return None
+    if index == pivot:
+        if not rule.pattern[index].match(mach.chr_by_id[chrid], memo):
+            return None
+        vector.append(chrid)
+        ret = search_partner(rule, index+1, pivot, chrid,
+            mach, program, active, vector, kills, memo)
+        vector.pop()
+        return ret
+    slot = rule.pattern[index]
+    for i in mach.chr_by_fsym.get(slot.fsym, {}):
+        if i in active:
+            continue
+        memo_ = memo.copy()
+        if slot.match(mach.chr_by_id[i], memo_):
+            vector.append(i)
+            active[i] = None
+            if rule.keep <= index:
+                kills[i] = None
+            memo_ = search_partner(rule, index+1, pivot, chrid,
+                mach, program, active, vector, kills, memo_)
+            if memo_ is not None:
+                return memo_
+            active.pop(i)
+            vector.pop()
+    return None

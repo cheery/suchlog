@@ -39,42 +39,42 @@ weak_to_move(Pokemon, Move) <-
   pokemon_type(Pokemon, PokemonType)
   super_effective(MoveType, PokemonType)
 
-reflexivity  @ leq(X, Y)            | same(X, Y)                  <=> true
-antisymmetry @ leq(X, Y), leq(Z, W) | and(same(X, W), same(Y, Z)) <=> X = Y
-transitivity @ leq(X, Y), leq(W, Z) | same(Y, W)                  ==> leq(X, Z)
-idempotence  @ leq(X, Y); leq(Z, W) | and(same(X, Z), same(Y, W)) <=> true
+reflexivity  @ leq(X, X)            <=> true
+antisymmetry @ leq(X, Y), leq(Y, X) <=> X = Y
+transitivity @ leq(X, Y), leq(Y, Z) ==> leq(X, Z)
+idempotence  @ leq(X, Y); leq(X, Y) <=> true
 
-green <-
-    chr_add_constraint(green, ID)
-    cond(green_guard_1(ID, ID_1), green_dispatch_1(ID, ID_1))
-    chr_suspend(ID)
-
-green_guard_1(ID, ID_1) <-
-    chr_alive(ID)
-    chr_partner(red, ID_1, 5) # Red occurrence=5
-
-green_dispatch_1(ID, ID_1) <-
-    chr_kill(ID)
-    chr_kill(ID_1)
-    brown
-
-red <-
-    chr_add_constraint(red, ID)
-    cond(red_guard_1(ID, ID_1), red_dispatch_1(ID, ID_1))
-    chr_suspend(ID)
-
-red_guard_1(ID, ID_1) <-
-    chr_alive(ID)
-    chr_partner(green, ID_1, 4) # The last one is occurrence number.
-
-red_dispatch_1(ID, ID_1) <-
-    chr_kill(ID)
-    chr_kill(ID_1)
-    # alternative: chr_suspend(ID, 4)
-    brown
-
-brown <-
-    chr_add_constraint(brown, ID)
-    chr_suspend(ID)
+#green <-
+#    chr_add_constraint(green, ID)
+#    cond(green_guard_1(ID, ID_1), green_dispatch_1(ID, ID_1))
+#    chr_suspend(ID)
+#
+#green_guard_1(ID, ID_1) <-
+#    chr_alive(ID)
+#    chr_partner(red, ID_1, 5) # Red occurrence=5
+#
+#green_dispatch_1(ID, ID_1) <-
+#    chr_kill(ID)
+#    chr_kill(ID_1)
+#    brown
+#
+#red <-
+#    chr_add_constraint(red, ID)
+#    cond(red_guard_1(ID, ID_1), red_dispatch_1(ID, ID_1))
+#    chr_suspend(ID)
+#
+#red_guard_1(ID, ID_1) <-
+#    chr_alive(ID)
+#    chr_partner(green, ID_1, 4) # The last one is occurrence number.
+#
+#red_dispatch_1(ID, ID_1) <-
+#    chr_kill(ID)
+#    chr_kill(ID_1)
+#    # alternative: chr_suspend(ID, 4)
+#    brown
+#
+#brown <-
+#    chr_add_constraint(brown, ID)
+#    chr_suspend(ID)
 
 # the chr_partner will produce history entry to be added.
