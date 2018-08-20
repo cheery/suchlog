@@ -245,10 +245,9 @@ def wrap(a):
 # Any mutation to any data structure must be
 # recorded in the trail.
 class Trail:
-    def __init__(self, conj, disj, next_varno):
+    def __init__(self, state, next_varno):
         self.sofar = []
-        self.conj = conj
-        self.disj = disj
+        self.state = state
         self.next_varno = next_varno
         self.backtrack = 0
         self.next_chrid = 0
@@ -258,44 +257,6 @@ class Trail:
         self.chr_occur = {}
         self.chr_debug = False
         self.chr_lock = False
-
-    def next_goal(self, cb):
-        assert isinstance(self.conj, Compound)
-        if self.conj.fsym is AND:
-            goal = self.conj.args[0]
-            self.conj = self.conj.args[1]
-            return goal
-        elif self.conj.fsym is TRUE:
-            if cb.signal(self):
-                self.disj = []
-            else:
-                self.conj = failure
-                return self.next_goal(cb)
-        elif self.conj.fsym is FALSE:
-            if len(self.disj) == 0:
-                return None
-            t, self.conj = self.disj.pop()
-            self.undo(t)
-            return self.next_goal(cb)
-        else:
-            goal = self.conj
-            self.conj = success
-            return goal
-
-    def invoke(self, goal):
-        if isinstance(goal, Compound) and goal.fsym is TRUE:
-            return
-        self.conj = Compound(AND, [goal, self.conj])
-
-    def expand(self, goals):
-        for goal in reversed(goals):
-            self.invoke(goal)
-
-    def choicepoint(self, goals):
-        conj = self.conj
-        for goal in reversed(goals):
-            conj = Compound(AND, [goal, conj])
-        self.disj.append((self.note(), conj))
 
     def note(self):
         return len(self.sofar)
@@ -330,7 +291,7 @@ class Trail:
 
     def bind(self, this, value):
         if len(this.attr) > 0:
-            self.expand([
+            self.state.expand([
                 Compound(UNIFY_ATTS, [this, value]),
                 Compound(BIND_HARD, [this, value])
             ])
@@ -341,7 +302,7 @@ class Trail:
         this.instance = value
         self.push(Bound(this))
         if this.goal is not None:
-            self.invoke(this.goal)
+            self.state.invoke(this.goal)
 
     def freeze(self, this, goal):
         self.push(Frozen(this, this.goal))
@@ -483,3 +444,56 @@ def hist_hash(a):
         mult += 82520 + z + z
     x += 97531
     return intmask(x)
+
+class SearchStrategy(object):
+    pass
+
+class DepthFirstSearch(SearchStrategy):
+    def __init__(self, conj, disj, cb):
+        self.conj = conj
+        self.disj = disj
+        self.cb   = cb
+
+    def next_goal(self, mach):
+        assert isinstance(self.conj, Compound)
+        if self.conj.fsym is AND:
+            goal = self.conj.args[0]
+            self.conj = self.conj.args[1]
+            return goal
+        elif self.conj.fsym is TRUE:
+            if self.cb.signal(self):
+                self.disj = []
+            else:
+                self.conj = failure
+                return self.next_goal(mach)
+        elif self.conj.fsym is FALSE:
+            if len(self.disj) == 0:
+                return None
+            t, self.conj = self.disj.pop()
+            mach.undo(t)
+            return self.next_goal(mach)
+        else:
+            goal = self.conj
+            self.conj = success
+            return goal
+
+    def invoke(self, goal):
+        if isinstance(goal, Compound) and goal.fsym is TRUE:
+            return
+        self.conj = Compound(AND, [goal, self.conj])
+
+    def expand(self, goals):
+        for goal in reversed(goals):
+            self.invoke(goal)
+
+    def choicepoint(self, mach, goals):
+        conj = self.conj
+        for goal in reversed(goals):
+            conj = Compound(AND, [goal, conj])
+        self.disj.append((mach.note(), conj))
+
+    def fail(self):
+        self.conj = failure
+
+    def subgoal(self, conj, disj, cb):
+        return DepthFirstSearch(conj, disj, cb)

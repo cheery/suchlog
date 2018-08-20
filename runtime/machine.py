@@ -1,7 +1,7 @@
 from objects import Atom, Compound, Integer, Variable
 from objects import known_atoms, atom, as_list, wrap
 from objects import CONS, NIL, AND, OR, TRUE, FALSE, failure, success
-from objects import Trail, UNIFY_ATTS, BIND_HARD
+from objects import Trail, UNIFY_ATTS, BIND_HARD, DepthFirstSearch
 import os
 
 CLAUSE = atom("<-", 2)
@@ -56,10 +56,9 @@ class Program:
         self.constraints = constraints
 
     def solve(self, cb, goal, next_varno):
-        conj = goal
-        disj = []
-        mach = Trail(conj, disj, next_varno)
-        return solve(mach, self, cb)
+        state = DepthFirstSearch(goal, [], cb)
+        mach = Trail(state, next_varno)
+        return solve(mach, self)
 
 WRITE = atom("write", 1)
 EXIT = atom("exit", 1)
@@ -71,37 +70,37 @@ GET_ATTS = atom("get_atts", 2)
 PUT_ATTS = atom("put_atts", 2)
 LIST_ATTS = atom("list_atts", 2)
 
-def solve(mach, program, cb, debug=False):
-    goal = mach.next_goal(cb)
+def solve(mach, program, debug=False):
+    goal = mach.state.next_goal(mach)
     while goal is not None:
         if debug:
             print
-            for _, a in mach.disj:
+            for _, a in mach.state.disj:
                 print "   " + a.stringify()
-            print "** " + goal.stringify() + "#" + mach.conj.stringify()
+            print "** " + goal.stringify() + "#" + mach.state.conj.stringify()
         if goal.fsym is TRUE:
             pass
         elif goal.fsym is FALSE:
-            mach.conj = failure
+            mach.state.fail()
         elif goal.fsym is AND:
             car = goal.args[0]
             cdr = goal.args[1]
-            mach.expand([car, cdr])
+            mach.state.expand([car, cdr])
         elif goal.fsym is OR:
             car = goal.args[0]
             cdr = goal.args[1]
-            mach.choicepoint([cdr])
-            mach.invoke(car)
+            mach.state.choicepoint(mach, [cdr])
+            mach.state.invoke(car)
         elif goal.fsym is SAME:
             car = goal.args[0]
             cdr = goal.args[1]
             if not car.same(cdr):
-                mach.conj = failure
+                mach.state.fail()
         elif goal.fsym is UNIFY:
             left = goal.args[0]
             right = goal.args[1]
             if not mach.unify(left, right):
-                mach.conj = failure
+                mach.state.fail()
         # I wonder if this is still required, or if it should be improved.
         elif goal.fsym is COND2:
             mach.backtrack += 1
@@ -109,16 +108,13 @@ def solve(mach, program, cb, debug=False):
             csucc = CondSuccess()
             cgoal = goal.args[0]
             cconj = goal.args[1]
-            conj = mach.conj
-            disj = mach.disj
-            mach.conj = cgoal
-            mach.disj = []
-            solve(mach, program, csucc, debug)
-            mach.conj = conj
-            mach.disj = disj
+            this_state = mach.state
+            mach.state = mach.state.subgoal(cgoal, [], csucc)
+            solve(mach, program, debug)
+            mach.state = this_state
             mach.backtrack -= 1
             if csucc.success:
-                mach.invoke(cconj)
+                mach.state.invoke(cconj)
             else:
                 mach.undo(t)
         elif goal.fsym is GET_ATTS:
@@ -127,10 +123,10 @@ def solve(mach, program, cb, debug=False):
             assert isinstance(spec, Compound)
             val = var.attr.get(spec.fsym, None)
             if val is None:
-                mach.conj = failure
+                mach.state.fail()
             else:
                 if not mach.unify(val, spec):
-                    mach.conj = failure
+                    mach.state.fail()
         elif goal.fsym is PUT_ATTS:
             var = goal.args[0]
             spec = goal.args[1]
@@ -143,7 +139,7 @@ def solve(mach, program, cb, debug=False):
                 mach.bind_hard(var, val)
             else:
                 if not mach.unify(var, val):
-                    mach.conj = failure
+                    mach.state.fail()
         elif goal.fsym is LIST_ATTS:
             var = goal.args[0]
             assert isinstance(var, Variable)
@@ -152,7 +148,7 @@ def solve(mach, program, cb, debug=False):
             for val in var.attr.itervalues():
                 res = Compound(CONS, [val, res])
             if not mach.unify(ret, res):
-                mach.conj = failure
+                mach.state.fail()
         elif goal.fsym is DEF:
             head = goal.args[0]
             clause = goal.args[1]
@@ -161,13 +157,13 @@ def solve(mach, program, cb, debug=False):
             top = mach.variant(clause.args[0])
             nxt = clause.args[1]
             if nxt.fsym is not NIL:
-                mach.choicepoint([Compound(DEF, [head, nxt])])
-            mach.expand([Compound(UNIFY, [head, top.args[0]]),
+                mach.state.choicepoint(mach, [Compound(DEF, [head, nxt])])
+            mach.state.expand([Compound(UNIFY, [head, top.args[0]]),
                 #Compound(WRITE, [head]),
                 top.args[1]])
         elif goal.fsym in program.defs:
             clauses = program.defs[goal.fsym]
-            mach.invoke(Compound(DEF, [goal, clauses]))
+            mach.state.invoke(Compound(DEF, [goal, clauses]))
         elif goal.fsym in program.constraints:
             chr_add_constraint(goal, mach, program)
         elif goal.fsym is CHR_RESUME:
@@ -180,7 +176,7 @@ def solve(mach, program, cb, debug=False):
             if isinstance(a, Integer):
                 raise Exiting(a.bignum.toint())
             else:
-                mach.conj = failure
+                mach.state.fail()
         elif goal.fsym is WRITE:
             s = goal.args[0].stringify()
             os.write(1, s + "\n")
@@ -191,8 +187,8 @@ def solve(mach, program, cb, debug=False):
         else:
             raise ValueError("unknown predicate: %s" % goal.stringify())
         if debug:
-            print "=> " + mach.conj.stringify()
-        goal = mach.next_goal(cb)
+            print "=> " + mach.state.conj.stringify()
+        goal = mach.state.next_goal(mach)
 
 class Success(object):
     def signal(self, mach):
@@ -218,16 +214,20 @@ class CHR:
         self.guard = guard
         self.goal = goal
 
-# The constraints would be convenient to implement
-# if there were "matching without unification"
-# Also for checking guards the constraint store
-# needs to be locked.
+# TODO: Note that the constraint propagation doesn't exhaustively
+# try every combination there is. I'll probably add it in later.
+# TODO: When a constraint is added where there are free variables,
+#       the variables should freeze-in an element that re-activates
+#       a constraint. I'll probably add this later as well.
 def chr_add_constraint(goal, mach, program):
     assert isinstance(goal, Compound)
     chrid = mach.next_chrid
     mach.next_chrid += 1
     mach.chr_add_constraint(chrid, goal)
     #print 'start resolution:    %d %s' % (chrid, goal.stringify())
+    # Without locking the database, we'd lose track
+    # of constraints added and removed and
+    # the constraint resolution step would fail.
     assert not mach.chr_lock
     mach.chr_lock = True
     constraint_resolution(goal.fsym, chrid, mach, program)
@@ -258,10 +258,10 @@ def constraint_resolution(fsym, chrid, mach, program, start=0):
             goal = mach.variant(rule.goal, memo)
             #print 'success: ' + goal.stringify()
             if rule.keep <= pivot: # The constraint did not survive.
-                return mach.expand([goal])
+                return mach.state.expand([goal])
             if start+1 >= len(constraints):
-                return mach.expand([goal])
-            return mach.expand([goal,
+                return mach.state.expand([goal])
+            return mach.state.expand([goal,
                 Compound(CHR_RESUME, [wrap(chrid), wrap(start+1)]) ])
         start += 1
 
@@ -282,13 +282,10 @@ def search_partner(rule, index, pivot, chrid, mach, program,
         mach.backtrack += 1
         guard = mach.variant(rule.guard, memo)
         csucc = CondSuccess()
-        conj = mach.conj
-        disj = mach.disj
-        mach.conj = guard
-        mach.disj = []
-        solve(mach, program, csucc)
-        mach.conj = conj
-        mach.disj = disj
+        this_state = mach.state
+        mach.state = mach.state.subgoal(guard, [], csucc)
+        solve(mach, program)
+        mach.state = this_state
         mach.backtrack -= 1
         if csucc.success:
             if rule.keep == len(rule.pattern):
