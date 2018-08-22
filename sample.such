@@ -1,7 +1,6 @@
 append(nil, nil, nil)
-append(nil, cons(X, Y), cons(X, Z)) <- append(nil, Y, Z)
-append(cons(A, M), N, cons(A, L)) <-
-    append(M, N, L)
+append(nil, X:Y, X:Z) <- append(nil, Y, Z)
+append(A:M, N,   A:L) <- append(M,   N, L)
 
 good_weather <-
    sunny
@@ -14,12 +13,14 @@ main <-
    leq(Y, Z)
    write(second) chr_printout
 
-   weak_to_move(X, Y)
-   write(weak_to_move(X, Y))
+   weak_to_move(Pokeymon, Mov)
+   write(weak_to_move(Pokeymon, Mov))
 
-   #weak_to_move(charmander, bubble)
-   #append(cons(1, nil), cons(2, nil), Y)
-   #write(hello(world, Y))
+   weak_to_move(charmander, bubble)
+
+   append([1], [2], G)
+   write(hello(G))
+
    #exit(0)
 
 super_effective(fire, grass)

@@ -20,13 +20,14 @@ leg.add('VBAR',         r"\|")
 leg.add('SIMP',         r"<=>")
 leg.add('PROP',         r"==>")
 leg.add('UNIFY',        r"=")
+leg.add('COLON',        r":")
 leg.add('SEMICOLON',    r";")
 lexer = leg.build()
 
 pg = ParserGenerator(
     ['ATOM', 'VARIABLE', 'IMPLICATION',
      'UNIFY', 'LEFTPAREN', 'RIGHTPAREN',
-     'LEFTBRACKET', 'RIGHTBRACKET',
+     'LEFTBRACKET', 'RIGHTBRACKET', 'COLON',
      'INTEGER',
      'AT', 'VBAR', 'SIMP', 'PROP', 'SEMICOLON',
      'LEFTPAREN0', 'COMMA', 'LINE'])
@@ -107,6 +108,16 @@ def clause_rule(env, p):
     body = unbox(p[2])
     return Box(Compound(env.getatom('<-', 2), [head, body]))
 
+@pg.production('predicate : predicate20')
+def predicate_passthrough(env, p):
+    return p[0]
+
+@pg.production('predicate : predicate20 COLON predicate')
+def predicate_list(env, p):
+    car = unbox(p[0])
+    cdr = unbox(p[2])
+    return Box(env.getcons(car, cdr))
+
 @pg.production('predicate_list : predicate')
 def predicate_list_first(env, p):
     car = unbox(p[0])
@@ -119,21 +130,21 @@ def predicate_list_next(env, p):
     cdr = unbox(p[2])
     return Box(env.getcons(car, cdr))
 
-@pg.production('formula   : ATOM')
-@pg.production('predicate : ATOM')
+@pg.production('formula     : ATOM')
+@pg.production('predicate20 : ATOM')
 def predicate_atom(env, p):
     return Box(Compound(env.getatom(p[0].getstr(), 0), []))
 
-@pg.production('predicate : INTEGER')
+@pg.production('predicate20 : INTEGER')
 def predicate_integer(env, p):
     return Box(parse_integer(p[0].getstr()))
 
-@pg.production('predicate : VARIABLE')
+@pg.production('predicate20 : VARIABLE')
 def predicate_variable(env, p):
     return Box(env.getvar(p[0].getstr()))
 
 @pg.production('formula   : ATOM LEFTPAREN predicate_list RIGHTPAREN')
-@pg.production('predicate : ATOM LEFTPAREN predicate_list RIGHTPAREN')
+@pg.production('predicate20 : ATOM LEFTPAREN predicate_list RIGHTPAREN')
 def predicate_compound(env, p):
     seq = as_list(unbox(p[2]))
     atom = env.getatom(p[0].getstr(), len(seq))
@@ -147,11 +158,11 @@ def formula_unify(env, p):
     return Box(Compound(atom, [left, right]))
 
 @pg.production('formula   : LEFTPAREN0 predicate RIGHTPAREN')
-@pg.production('predicate : LEFTPAREN0 predicate RIGHTPAREN')
+@pg.production('predicate20 : LEFTPAREN0 predicate RIGHTPAREN')
 def parentheses(env, p):
     return p[1]
 
-@pg.production('predicate : LEFTBRACKET list_predicate RIGHTBRACKET')
+@pg.production('predicate20 : LEFTBRACKET list_predicate RIGHTBRACKET')
 def predicate_list(env, p):
     return p[1]
 

@@ -1,7 +1,8 @@
 from objects import Atom, Compound, Integer, Variable
 from objects import known_atoms, atom, as_list, wrap
 from objects import CONS, NIL, AND, OR, TRUE, FALSE, failure, success
-from objects import Trail, UNIFY_ATTS, BIND_HARD, DepthFirstSearch
+from objects import Trail, UNIFY_ATTS, BIND_HARD
+from objects import DepthFirstSearch, OrderedSearch
 import os
 
 CLAUSE = atom("<-", 2)
@@ -56,7 +57,7 @@ class Program:
         self.constraints = constraints
 
     def solve(self, cb, goal, next_varno):
-        state = DepthFirstSearch(goal, [], cb)
+        state = OrderedSearch(goal, [], cb)
         mach = Trail(state, next_varno)
         return solve(mach, self)
 
@@ -65,6 +66,7 @@ EXIT = atom("exit", 1)
 
 CHR_RESUME   = atom("chr_resume", 2)
 CHR_PRINTOUT = atom("chr_printout", 0)
+CHR_REVISE   = atom("chr_revise", 1)
 
 GET_ATTS = atom("get_atts", 2)
 PUT_ATTS = atom("put_atts", 2)
@@ -167,19 +169,55 @@ def solve(mach, program, debug=False):
         elif goal.fsym in program.constraints:
             chr_add_constraint(goal, mach, program)
         elif goal.fsym is CHR_RESUME:
-            chr_resume(goal, mach, program)
+            chrid = goal.args[0]
+            assert isinstance(chrid, Integer)
+            chrid = chrid.bignum.toint()
+            start = goal.args[1]
+            assert isinstance(start, Integer)
+            start = start.bignum.toint()
+            chr_resume(chrid, start, mach, program)
         # Implementation of side effects in logic language
         # are bit of a question.
         # This looks like slightly wrong way to do it.
         elif goal.fsym is EXIT:
             a = goal.args[0].unroll()
-            if isinstance(a, Integer):
-                raise Exiting(a.bignum.toint())
-            else:
+            if is_ground(a):
+                if isinstance(a, Integer):
+                    raise Exiting(a.bignum.toint())
+                else:
+                    mach.state.fail()
+            elif mach.chr_lock:
                 mach.state.fail()
+            else:
+                chr_add_constraint(goal, mach, program)
         elif goal.fsym is WRITE:
-            s = goal.args[0].stringify()
-            os.write(1, s + "\n")
+            a = goal.args[0].unroll()
+            if is_ground(a):
+                s = a.stringify()
+                os.write(1, s + "\n")
+            elif mach.chr_lock:
+                mach.state.fail()
+            else:
+                chr_add_constraint(goal, mach, program)
+        elif goal.fsym is CHR_REVISE:
+            revise = goal
+            a = goal.args[0]
+            assert isinstance(a, Integer)
+            i = a.bignum.toint()
+            goal = mach.chr_by_id.get(i, None)
+            if goal is not None:
+                assert isinstance(goal, Compound)
+                if goal.fsym is WRITE and is_ground(goal.args[0]):
+                    s = goal.args[0].stringify()
+                    os.write(1, s + "\n")
+                elif goal.fsym is EXIT and is_ground(goal.args[0]):
+                    if isinstance(a, Integer):
+                        raise Exiting(a.bignum.toint())
+                    else:
+                        mach.state.fail()
+                else:
+                    deep_freeze(mach, goal, revise, True)
+                    chr_resume(i, 0, mach, program)
         elif goal.fsym is CHR_PRINTOUT:
             for chrid, const in mach.chr_by_id.iteritems():
                 s = const.stringify()
@@ -224,6 +262,7 @@ def chr_add_constraint(goal, mach, program):
     chrid = mach.next_chrid
     mach.next_chrid += 1
     mach.chr_add_constraint(chrid, goal)
+    deep_freeze(mach, goal, Compound(CHR_REVISE, [wrap(chrid)]))
     #print 'start resolution:    %d %s' % (chrid, goal.stringify())
     # Without locking the database, we'd lose track
     # of constraints added and removed and
@@ -234,13 +273,24 @@ def chr_add_constraint(goal, mach, program):
     mach.chr_lock = False
     #print 'stopped  resolution: %d' % chrid
 
-def chr_resume(goal, mach, program):
-    chrid = goal.args[0]
-    assert isinstance(chrid, Integer)
-    chrid = chrid.bignum.toint()
-    start = goal.args[1]
-    assert isinstance(start, Integer)
-    start = start.bignum.toint()
+def is_ground(val):
+    val = val.unroll()
+    if isinstance(val, Compound):
+        for arg in val.args:
+            if not is_ground(arg):
+                return False
+        return True
+    return not isinstance(val, Variable)
+
+def deep_freeze(mach, val, goal, may_occur=False):
+    val = val.unroll()
+    if isinstance(val, Compound):
+        for arg in val.args:
+            deep_freeze(mach, arg, goal, may_occur)
+    elif isinstance(val, Variable):
+        mach.freeze(val, goal, occurs_check=may_occur)
+
+def chr_resume(chrid, start, mach, program):
     fsym = mach.chr_by_id[chrid].fsym
     #print 'start resolution:    %d' % chrid
     assert not mach.chr_lock
@@ -250,7 +300,7 @@ def chr_resume(goal, mach, program):
     #print 'stopped  resolution: %d' % chrid
 
 def constraint_resolution(fsym, chrid, mach, program, start=0):
-    constraints = program.constraints[fsym]
+    constraints = program.constraints.get(fsym, [])
     for rule, pivot in constraints[start:]:
         #print 'checking rule %s:%d' % (rule.name, pivot)
         memo = execute_rule(rule, pivot, chrid, mach, program)

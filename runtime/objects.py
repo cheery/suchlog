@@ -50,6 +50,8 @@ class Compound(Object):
         return True
 
     def occurs(self, t):
+        if self is t:
+            return True
         for arg in self.args:
             if arg.occurs(t):
                 return True
@@ -96,7 +98,7 @@ class Integer(Object):
         return False
 
     def occurs(self, t):
-        return False
+        return self.same(t)
 
     def same(self, t):
         t = t.unroll()
@@ -214,9 +216,13 @@ AND = atom("and", 2)
 OR  = atom("or", 2)
 TRUE = atom("true", 0)
 FALSE = atom("false", 0)
+DEF = atom("DEF", 2)
 
 UNIFY_ATTS = atom("unify_atts", 2)
 BIND_HARD = atom("bind_hard", 2)
+
+UNIFY = atom("=", 2)
+SAME = atom("same", 2)
 
 success = Compound(TRUE, [])
 failure = Compound(FALSE, [])
@@ -304,12 +310,15 @@ class Trail:
         if this.goal is not None:
             self.state.invoke(this.goal)
 
-    def freeze(self, this, goal):
-        self.push(Frozen(this, this.goal))
+    def freeze(self, this, goal, occurs_check=False):
+        assert isinstance(this, Variable)
         if this.goal is None:
             this.goal = goal
+        elif occurs_check and this.goal.occurs(goal):
+            return
         else:
             this.goal = Compound(AND, [goal, this.goal])
+        self.push(Frozen(this, this.goal))
 
     def chr_add_constraint(self, chrid, c):
         if self.chr_debug:
@@ -497,3 +506,80 @@ class DepthFirstSearch(SearchStrategy):
 
     def subgoal(self, conj, disj, cb):
         return DepthFirstSearch(conj, disj, cb)
+
+class OrderedSearch(SearchStrategy):
+    def __init__(self, conj, disj, cb):
+        self.unif   = []
+        self.det    = [conj]
+        self.nondet = []
+        self.disj   = disj
+        self.cb     = cb 
+
+    def next_goal(self, mach):
+        if len(self.unif) > 0:
+            goal = self.unif.pop()
+        elif len(self.det) > 0:
+            goal = self.det.pop()
+        elif len(self.nondet) > 0:
+            goal = self.nondet.pop()
+        else:
+            if self.cb.signal(self):
+                self.disj = []
+                return None
+            else:
+                self.unif.append(failure)
+                return self.next_goal(mach)
+        if goal.fsym is FALSE:
+            if len(self.disj) == 0:
+                return None
+            t, self.unif, self.det, self.nondet = self.disj.pop()
+            mach.undo(t)
+            return self.next_goal(mach)
+        return goal
+
+    def invoke(self, goal):
+        if isinstance(goal, Compound) and goal.fsym is TRUE:
+            return
+        elif isinstance(goal, Compound) and goal.fsym is AND:
+            self.invoke(goal.args[1])
+            self.invoke(goal.args[0])
+        elif  isinstance(goal, Compound) and goal.fsym is OR:
+            self.nondet.append(goal)
+        elif  isinstance(goal, Compound) and goal.fsym is DEF:
+            if is_small_list(goal.args[1]):
+                self.det.append(goal)
+            else:
+                self.nondet.append(goal)
+        elif  isinstance(goal, Compound) and goal.fsym is UNIFY:
+            self.unif.append(goal)
+        elif  isinstance(goal, Compound) and goal.fsym is SAME:
+            self.unif.append(goal)
+        else:
+            self.det.append(goal)
+
+    def expand(self, goals):
+        for goal in reversed(goals):
+            self.invoke(goal)
+
+    def choicepoint(self, mach, goals):
+        unif   = list(self.unif)
+        det    = list(self.det)
+        nondet = list(self.nondet)
+        self.expand(goals)
+        self.disj.append((mach.note(), self.unif, self.det, self.nondet))
+        self.unif   = unif
+        self.det    = det
+        self.nondet = nondet
+
+    def fail(self):
+        self.unif.append(failure)
+
+    def subgoal(self, conj, disj, cb):
+        return OrderedSearch(conj, disj, cb)
+
+def is_small_list(a):
+    a1 = a.args[1]
+    if isinstance(a1, Compound) and a1.fsym is CONS:
+        a2 = a1.args[1]
+        return isinstance(a2, Compound) and a2.fsym is NIL
+    return False
